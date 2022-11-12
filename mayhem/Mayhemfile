@@ -1,0 +1,8 @@
+project: dpkt
+target: packet-parse
+testsuite:
+	- file://mayhem/testsuite
+
+cmds:
+  - cmd: /src/mayhem/fuzz_pcap_parser.py
+    libfuzzer: true
