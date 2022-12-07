@@ -41,7 +41,7 @@ def TestOneInput(data):
 
 
 def main():
-    atheris.Setup(sys.argv, TestOneInput)
+    atheris.Setup(sys.argv, TestOneInput, internal_libfuzzer=False)
     atheris.Fuzz()
 
 
