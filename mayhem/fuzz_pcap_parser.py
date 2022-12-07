@@ -4,7 +4,8 @@ import atheris
 import io
 import sys
 
-with atheris.instrument_imports():
+with atheris.instrument_imports(exclude=["__future__", "copy", "weakref", "_weakrefset", "struct", "socket", "selectors",
+    "calendar", "datetime", "locale", "decimal", "numbers", "_socket", "math", "select", "errno", "array", "_datetime", "zlib", "binascii"]):
     import dpkt
 
 
@@ -41,7 +42,7 @@ def TestOneInput(data):
 
 
 def main():
-    atheris.Setup(sys.argv, TestOneInput, internal_libfuzzer=False)
+    atheris.Setup(sys.argv, TestOneInput)
     atheris.Fuzz()
 
 
