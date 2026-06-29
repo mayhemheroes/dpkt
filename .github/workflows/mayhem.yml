@@ -1,0 +1,107 @@
+# The Mayhem worker: build the commit image from mayhem/Dockerfile, push it to ghcr, then run
+# Mayhem over each Mayhemfile. Runs on manual dispatch and is called by the sync cron
+# (sync.yml) only when upstream actually moved — we fuzz on real upstream movement or an explicit
+# dispatch, NOT on every commit to the mayhem branch.
+# Three duration tiers:
+#   - 300s  (5 min)  manual dispatch / `/check` — a CONFIRMATION run that proves every target gets edges
+#                    in Mayhem (run-health). This is the integrated gate; kept short so /check is fast.
+#   - 1200s (20 min) the weekly sync cron (workflow_call) — regular bug-finding as upstream moves.
+#   - long  (4h+)    a deliberate DEEP-RUN pass: scripts/integration/deep-run.sh, or
+#                    gh workflow run mayhem.yml --ref mayhem -f duration=14400
+# Only the 5-min edges check gates `integrated`; 20m/4h are bug-finding, never required for integrated.
+# Fill in the `mayhemfile` matrix below. Needs the MAYHEM_TOKEN secret.
+name: Mayhem
+
+on:
+  workflow_dispatch:             # manual / `/check` run (gh workflow run mayhem.yml --ref mayhem [-f duration=14400])
+    inputs:
+      duration:
+        description: 'Fuzz seconds per target (default 300 = 5 min confirmation; e.g. 14400 = 4h deep run).'
+        type: string
+        required: false
+        default: '300'
+  workflow_call:                 # sync.yml calls this (only when upstream moved), passing the rebased SHA
+    inputs:
+      ref:
+        description: commit/branch to build (cron passes the freshly-rebased mayhem SHA)
+        type: string
+        required: false
+        default: ''
+      duration:                  # the weekly cron's regular bug-finding run: 20 min (deep-run requests longer)
+        description: fuzz seconds per target
+        type: string
+        required: false
+        default: '1200'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: build commit image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write          # push the commit image to ghcr.io/<org>/<repo>
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0          # FULL history — the Dockerfile COPYs .git into /mayhem, so the image
+                                  # must hold a real copy of the `mayhem` branch (upstream history + the
+                                  # additive integration commit). The default depth-1 shallow clone bakes
+                                  # in a single squashed-looking commit and breaks the grader / PATCH tier.
+          ref: ${{ inputs.ref || github.sha }}     # build the cron's rebased SHA when called
+
+      - name: Resolve build SHA
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: type=raw,value=commit-${{ steps.sha.outputs.sha }}   # tag the exact built commit
+
+      - name: Build and push (mayhem/Dockerfile)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: mayhem/Dockerfile
+          push: true
+          build-args: |
+            COMMIT=${{ steps.sha.outputs.sha }}
+            REPO_URL=${{ github.server_url }}/${{ github.repository }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      ref: ${{ steps.sha.outputs.sha }}
+
+  mayhem:
+    needs: build
+    name: 'fuzz ${{ matrix.mayhemfile }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mayhemfile:                 # EDIT: one entry per mayhem/Mayhemfile_*
+          - mayhem/Mayhemfile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.ref }}
+      - name: Start analysis for ${{ matrix.mayhemfile }}
+        uses: ForAllSecure/mcode-action@v1
+        with:
+          mayhem-token: ${{ secrets.MAYHEM_TOKEN }}
+          args: --image ${{ needs.build.outputs.image }} --file ${{ matrix.mayhemfile }} --duration ${{ inputs.duration || '1200' }}

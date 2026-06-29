@@ -1,0 +1,14 @@
+# Mayhem target: dpkt PCAP/packet parser (Atheris/libFuzzer harness).
+# The cmd binary is the compiled ELF launcher that drives mayhem/fuzz_pcap_parser.py; Atheris
+# instruments the dpkt library so the run records coverage (edges). The harness reads a pcap stream
+# via dpkt.pcap.Reader, then parses each packet through ethernet -> IP.
+project: dpkt
+target: packet-parse
+
+cmds:
+  - cmd: /mayhem/packet-parse
+    libfuzzer: true
+
+# Seed corpus of representative pcap captures (file:// URIs, per the Mayhemfile schema).
+testsuite:
+  - file:///mayhem/mayhem/seeds
